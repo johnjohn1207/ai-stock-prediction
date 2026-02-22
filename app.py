@@ -448,8 +448,8 @@ if st.session_state.is_trained:
     # get_inverse_price 回傳的是陣列，[0] 取出第一個，.item() 確保它是純數字
     next_return_val = float(get_inverse_price(next_pred_raw)[0])
     # 2. 抓取最後一天的真實收盤價，同樣確保它是純數字
-    # raw_close_prices[-1] 有時會是個陣列，用 .item() 最保險
-    last_actual_close = float(raw_close_prices[-1]) 
+    # raw_close_prices[-1] 有時會是個陣列，強制轉成純 float
+    last_actual_close = float(np.asarray(raw_close_prices[-1]).flatten()[0])
     # 3. 換算預測收盤價
     next_price_val = last_actual_close * (1 + next_return_val)
 
