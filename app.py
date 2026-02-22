@@ -310,8 +310,13 @@ if st.session_state.is_trained:
     
     # 計算夏普比率與最大回撤
     # 修正: np.mean/np.std 回傳型態，確保 sharpe_val 為純 float
-    mean_ret = float(np.mean(strategy_returns))
-    std_ret = float(np.std(strategy_returns) + 1e-9)
+    # 再次修正: np.mean/np.std 回傳型態，item() 取純 float
+    mean_ret = np.mean(strategy_returns)
+    std_ret = np.std(strategy_returns) + 1e-9
+    if hasattr(mean_ret, 'item'):
+        mean_ret = mean_ret.item()
+    if hasattr(std_ret, 'item'):
+        std_ret = std_ret.item()
     sharpe_val = mean_ret / std_ret * np.sqrt(252)
 
 # 如果計算結果是 NaN (例如沒交易)，給它一個 0.0
