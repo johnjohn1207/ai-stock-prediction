@@ -366,8 +366,13 @@ if st.session_state.is_trained:
 
     # Clean cumulative returns to ensure all values are finite
     # Ensure inputs are 1D float arrays
-    strategy_returns_clean = np.asarray(strategy_returns).astype(float).flatten()
-    y_test_actual_clean = np.asarray(y_test_actual).astype(float).flatten()
+
+    # Ensure all elements are float scalars (not arrays)
+    def flatten_to_float(arr):
+        return np.array([float(x) if np.ndim(x) == 0 else float(np.asarray(x).flatten()[0]) for x in arr])
+
+    strategy_returns_clean = flatten_to_float(strategy_returns)
+    y_test_actual_clean = flatten_to_float(y_test_actual)
 
     cumulative_strategy = (1 + pd.Series(strategy_returns_clean)).cumprod()
     cumulative_strategy = pd.Series(cumulative_strategy).replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
