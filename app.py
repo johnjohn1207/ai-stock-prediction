@@ -365,12 +365,16 @@ if st.session_state.is_trained:
     # 修正：直接使用 y_test_actual 作為大盤對照組
 
     # Clean cumulative returns to ensure all values are finite
-    cumulative_strategy = (1 + pd.Series(strategy_returns)).cumprod()
-    cumulative_strategy = pd.Series(cumulative_strategy).replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(1.0)
+    # Ensure inputs are 1D float arrays
+    strategy_returns_clean = np.asarray(strategy_returns).astype(float).flatten()
+    y_test_actual_clean = np.asarray(y_test_actual).astype(float).flatten()
+
+    cumulative_strategy = (1 + pd.Series(strategy_returns_clean)).cumprod()
+    cumulative_strategy = pd.Series(cumulative_strategy).replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
     cumulative_strategy = np.asarray(cumulative_strategy).astype(float).flatten()
 
-    cumulative_actual = (1 + pd.Series(y_test_actual)).cumprod()
-    cumulative_actual = pd.Series(cumulative_actual).replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(1.0)
+    cumulative_actual = (1 + pd.Series(y_test_actual_clean)).cumprod()
+    cumulative_actual = pd.Series(cumulative_actual).replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
     cumulative_actual = np.asarray(cumulative_actual).astype(float).flatten()
 
     fig_perf, ax_perf = plt.subplots(figsize=(10, 4))
