@@ -363,8 +363,13 @@ if st.session_state.is_trained:
     st.subheader("💰 AI 策略模擬累積收益率")
     
     # 修正：直接使用 y_test_actual 作為大盤對照組
+
+    # Clean cumulative returns to ensure all values are finite
     cumulative_strategy = (1 + pd.Series(strategy_returns)).cumprod()
+    cumulative_strategy = pd.Series(cumulative_strategy).replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(1.0)
+
     cumulative_actual = (1 + pd.Series(y_test_actual)).cumprod()
+    cumulative_actual = pd.Series(cumulative_actual).replace([np.inf, -np.inf], np.nan).fillna(method='ffill').fillna(1.0)
 
     fig_perf, ax_perf = plt.subplots(figsize=(10, 4))
     # 讓兩條線都從 1.0 開始（代表 100% 原始本金）
