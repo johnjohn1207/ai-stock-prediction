@@ -385,21 +385,28 @@ if st.session_state.is_trained:
         st.dataframe(trade_df)
     else:
         st.write("沒有產生交易訊號")
-    st.subheader("💰 策略最終結果")
+    # --- 修正：策略最終結果型態轉換 ---
+    # 使用 np.array(x).item() 就像是把多層包裝的禮物拆開，直到剩下核心的純數字
+    final_capital_val = float(np.array(final_capital).item())
+    total_return_pct_val = float(np.array(total_return_pct).item())
+    max_drawdown_val = float(np.array(max_drawdown).item())
+    win_rate_val = float(np.array(win_rate).item())
 
+    st.subheader("💰 策略最終結果")
     colA, colB = st.columns(2)
 
     with colA:
-    # 使用我們轉換後的純數字變數
+        # 顯示初始本金
         st.metric("初始本金", f"${initial_capital:,.0f}")
 
     with colB:
-    # 這裡就不會再報錯了！
+        # 顯示最終資金與總報酬變動
         st.metric(
             "最終資金", 
             f"${final_capital_val:,.0f}", 
             delta=f"{total_return_pct_val:.2f}%"
         )
+    
     col1, col2, col3 = st.columns(3)
 
     with col1:
@@ -409,7 +416,7 @@ if st.session_state.is_trained:
         st.metric("最大回撤 (MDD)", f"{max_drawdown_val:.2f}%")
 
     with col3:
-        st.metric("勝率 (Win Rate)", f"{win_rate_val:.2f}%")     
+        st.metric("勝率 (Win Rate)", f"{win_rate_val:.2f}%")  
     # --- 預測明天 (修正型態問題) ---
     feature_count = scaled_data.shape[1] 
     last_window_data = scaled_data[-look_back:]
