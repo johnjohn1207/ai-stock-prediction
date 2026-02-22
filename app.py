@@ -302,8 +302,7 @@ if st.session_state.is_trained:
 
     final_capital = capital
     total_return_pct = (final_capital / initial_capital - 1) * 100
-    final_capital_val = float(final_capital)
-    total_return_pct_val = float(total_return_pct)
+
     
     # === 修正：補上缺失的 strategy_returns ===
     equity_series = pd.Series(equity_curve)
@@ -317,15 +316,11 @@ if st.session_state.is_trained:
         sharpe_val = 0.0
     rolling_max = equity_series.cummax()
     drawdown = (equity_series - rolling_max) / rolling_max
-    max_drawdown = drawdown.min() * 100
-    max_drawdown_val = float(max_drawdown)
-    
+    max_drawdown = drawdown.min() * 100    
     if len(trade_profits) > 0:
         win_rate = np.mean(np.array(trade_profits) > 0) * 100
     else:
         win_rate = 0
-    win_rate_val = float(win_rate)
-
     # --- 8. 在 Streamlit 上顯示儀表板 ---
     st.divider()
     st.header("📈 模型專業評估儀表板")
