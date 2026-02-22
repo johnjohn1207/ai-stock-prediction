@@ -309,7 +309,10 @@ if st.session_state.is_trained:
     strategy_returns = equity_series.pct_change().fillna(0).values 
     
     # 計算夏普比率與最大回撤
-    sharpe_val = float((np.mean(strategy_returns) / (np.std(strategy_returns) + 1e-9)) * np.sqrt(252))
+    # 修正: np.mean/np.std 回傳型態，確保 sharpe_val 為純 float
+    mean_ret = float(np.mean(strategy_returns))
+    std_ret = float(np.std(strategy_returns) + 1e-9)
+    sharpe_val = mean_ret / std_ret * np.sqrt(252)
 
 # 如果計算結果是 NaN (例如沒交易)，給它一個 0.0
     if np.isnan(sharpe_val):
