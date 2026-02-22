@@ -375,8 +375,8 @@ if st.session_state.is_trained:
 
     fig_perf, ax_perf = plt.subplots(figsize=(10, 4))
     # 讓兩條線都從 1.0 開始（代表 100% 原始本金）
-    ax_perf.plot(cumulative_actual.values, label="Market Return (Buy & Hold)", color="gray", alpha=0.5)
-    ax_perf.plot(cumulative_strategy.values, label="AI Strategy Return", color="gold", linewidth=2)
+    ax_perf.plot(cumulative_actual, label="Market Return (Buy & Hold)", color="gray", alpha=0.5)
+    ax_perf.plot(cumulative_strategy, label="AI Strategy Return", color="gold", linewidth=2)
     ax_perf.axhline(y=1.0, color='black', linestyle='--', alpha=0.3) # 增加一條 1.0 的基準線
     ax_perf.legend()
     ax_perf.set_ylabel("Cumulative Return (Multiple)")
