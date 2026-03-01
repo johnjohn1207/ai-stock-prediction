@@ -1,6 +1,7 @@
 # AI 股價預測系統
 
 本專案是一個基於 LSTM 深度學習模型的股價預測與回測系統，使用 Streamlit 製作互動式網頁介面，並結合 yfinance 取得歷史股價資料。用戶可自訂參數，模型將預測未來股價漲跌並模擬交易策略績效。
+部署網址：https://ai-stock-prediction-buknzvrsdxybkhmr9ijkjv.streamlit.app/
 
 ## 主要功能
 - 股票資料自動下載（yfinance）
