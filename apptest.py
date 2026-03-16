@@ -22,6 +22,9 @@ initial_capital = st.sidebar.number_input("初始本金 ($)", min_value=1000, va
 start_date = st.sidebar.date_input("開始日期", pd.to_datetime("2020-01-01"))
 end_date = st.sidebar.date_input("結束日期", pd.to_datetime("today"))
 predict_btn = st.sidebar.button("執行 AI 訓練與預測")
+st.sidebar.subheader("風險控管")
+stop_loss_pct = st.sidebar.slider("停損比例 (%)", 1, 20, 5) / 100
+take_profit_pct = st.sidebar.slider("停利比例 (%)", 1, 100, 15) / 100
 
 if "is_trained" not in st.session_state:
     st.session_state.is_trained = False
@@ -31,21 +34,31 @@ if predict_btn:
 
 if st.session_state.is_trained:
     # 把原本 if predict_btn: 底下的程式碼全部放在這裡，這樣就不會因為按鈕被按了又按了而重複執行訓練流程了
+    # --- 2. 抓取數據 (替換原本這段) ---
     with st.spinner('正在獲取金融數據...'):
         df = yf.download(ticker, start=start_date, end=end_date)
         if df.empty:
             st.error("找不到該股票代號，請重新輸入。")
             st.stop()
+        
+        # 關鍵：新增報酬率作為預測目標
+        df['Return'] = df['Close'].pct_change()
+        
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-        df = df.dropna()  # RSI 前14天會是 NaN
-        features = df[['Close', 'Volume', 'RSI']].values
-        # 紀錄日期，這是橫軸關鍵！
-        # 因為模型預測是從第 look_back 天開始，所以日期也要從那邊開始對齊
+        
+        df = df.dropna() 
+        
+        # 關鍵：保留一份原始收盤價供最後計算使用
+        raw_close_prices = df['Close'].values 
+        
+        # 這裡的特徵數量變成 4 (Return, Close, Volume, RSI)
+        features = df[['Return', 'Close', 'Volume', 'RSI']].values
         all_dates = df.index
+        raw_close_prices = df['Close'].values # 保留原始收盤價，等等回測要用！
 
     # --- 3. 數據預處理 ---
     scaler = MinMaxScaler(feature_range=(0, 1))
@@ -92,8 +105,8 @@ if st.session_state.is_trained:
     class LSTMModel(nn.Module):
         def __init__(self):
             super(LSTMModel, self).__init__()
-            # 改成 3，因為我們有 (Close, Volume, RSI)
-            self.lstm = nn.LSTM(input_size=3, hidden_size=50, num_layers=2, batch_first=True, dropout=0.2)
+            # input_size 改成 4 (Return, Close, Volume, RSI)
+            self.lstm = nn.LSTM(input_size=4, hidden_size=50, num_layers=2, batch_first=True, dropout=0.2)
             self.linear = nn.Linear(50, 1)
 
         def forward(self, x):
@@ -172,95 +185,150 @@ if st.session_state.is_trained:
     st.pyplot(fig)
 
     # 預測明天
-    last_window = torch.from_numpy(scaled_data[-look_back:]).float().view(1, look_back, 3).to(device)
+    # --- 預測明天 (雲端部屬防呆版) ---
+    feature_count = scaled_data.shape[1] 
+    last_window_data = scaled_data[-look_back:]
+    last_window_tensor = torch.from_numpy(last_window_data).float().view(1, look_back, feature_count).to(device)
+    
+    model.eval()
     with torch.no_grad():
-        next_price_raw = model(last_window).cpu().numpy()
+        next_pred_raw = model(last_window_tensor).cpu().numpy()
 
-    # 同樣使用虛擬填充轉回價格
-    next_price_val = get_inverse_price(next_price_raw)[0]
-    st.success(f"🔮 AI 預測下一個交易日收盤價為： **${next_price_val:.2f}**")
+    # 1. 轉回實際報酬率：確保只抓取第一個純數值
+    inv_pred = get_inverse_price(next_pred_raw)
+    next_return_val = float(np.array(inv_pred).flatten()[0])
+    
+    # 2. 抓取最後一天的真實收盤價：同樣確保它是純數值
+    # .flatten() 能把任何多維陣列壓平，[ -1] 抓最後一個
+    last_actual_close = float(np.array(raw_close_prices).flatten()[-1])
+    
+    # 3. 換算預測收盤價
+    # 計算公式： $next\_price = last\_close \times (1 + next\_return)$
+    next_price_val = last_actual_close * (1 + next_return_val)
+
+    # 4. 顯示結果 (使用轉好的純 float 變數)
+    st.divider()
+    st.subheader("🔮 明日走勢預測")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        st.metric("預測漲跌幅", f"{next_return_val * 100:.2f}%")
+    with col_p2:
+        # 直接使用計算好的數字，不再在 f-string 裡面包 float()
+        st.success(f"🎯 換算預測收盤價約為： **${next_price_val:.2f}**")
 
     # --- 7. 指標計算 (修正：僅針對測試集進行評估) ---
 
     # A. 基礎誤差指標 (針對測試集)
+    # A. 基礎誤差指標
     rmse = np.sqrt(mean_squared_error(y_test_actual, test_predict_plot))
     mae = mean_absolute_error(y_test_actual, test_predict_plot)
-    mape = np.mean(np.abs((y_test_actual - test_predict_plot) / y_test_actual)) * 100
+    # 移除 mape，因為報酬率接近 0 時會導致數值異常
 
-    # B. 方向準度 (針對測試集)
-    actual_returns = pd.Series(y_test_actual).pct_change().dropna().values
-    pred_trend = test_predict_plot[1:] > test_predict_plot[:-1]
-    min_len = min(len(actual_returns), len(pred_trend))
-    final_actual_returns = actual_returns[:min_len]
-    final_signals = pred_trend[:min_len]
-
-    direction_acc = np.mean((final_actual_returns > 0) == final_signals) * 100
+    # B. 方向準度
+    actual_direction = y_test_actual > 0
+    final_signals = test_predict_plot > 0 
+    direction_acc = np.mean(actual_direction == final_signals) * 100
 
     # C. 金融指標 (針對測試集)
     # === 交易模擬 ===
+    # C. 金融指標 (針對測試集)
+    # === 交易模擬 (完全無未來函數，且使用真實價格) ===
     capital = initial_capital
     position = 0
     trade_log = []
-    equity_curve = [initial_capital] # 第一天的資產就是初始本金
+    equity_curve = [initial_capital]
     trade_profits = []
 
-    # 確保價格陣列長度與訊號對齊
-    prices = y_test_actual
+    # 提取與測試集對齊的真實收盤價
+    backtest_prices = raw_close_prices[look_back + train_size:]
+
     entry_price = 0
 
-    # final_signals[i] 代表在第 i 天收盤時，預測 i+1 天會漲或跌
-    for i in range(len(final_signals)):
-        current_price = prices[i]       # 今天的實際收盤價 (執行交易的價格)
-        next_price = prices[i+1]        # 明天的實際收盤價 (計算明日資產用的價格)
-        signal = final_signals[i]       # 今天收盤時產生的訊號
+    # 留最後一天計算資產，所以迴圈跑 len(final_signals) - 1
+    for i in range(len(final_signals) - 1):
+        current_price = backtest_prices[i]
+        next_price = backtest_prices[i+1]
+        signal = final_signals[i]
 
-        # === 買進 (在今天收盤時買進) ===
-        if signal and position == 0:
+        # === 持股狀態下的判斷 ===
+        if position > 0:
+            # 計算當前報酬率
+            current_ret = (current_price - entry_price) / entry_price
+
+            # 1. 檢查停損 (Stop Loss)
+            if current_ret <= -stop_loss_pct:
+                capital += position * current_price
+                profit = (current_price - entry_price) * position
+                trade_profits.append(profit)
+                trade_log.append((test_dates[i], "STOP LOSS", current_price, capital, 0))
+                position = 0
+
+            # 2. 檢查停利 (Take Profit)
+            elif current_ret >= take_profit_pct:
+                capital += position * current_price
+                profit = (current_price - entry_price) * position
+                trade_profits.append(profit)
+                trade_log.append((test_dates[i], "TAKE PROFIT", current_price, capital, 0))
+                position = 0
+
+            # 3. AI 賣出訊號 (當預測明天會跌時)
+            elif not signal:
+                capital += position * current_price
+                profit = (current_price - entry_price) * position
+                trade_profits.append(profit)
+                trade_log.append((test_dates[i], "SELL (AI Signal)", current_price, capital, 0))
+                position = 0
+
+        # === 空手狀態下的買進判斷 ===
+        elif signal and position == 0:
             position = capital // current_price
             if position > 0:
                 capital -= position * current_price
                 entry_price = current_price
                 trade_log.append((test_dates[i], "BUY", current_price, capital, position))
 
-        # === 賣出 (在今天收盤時賣出) ===
-        elif not signal and position > 0:
-            capital += position * current_price
-            profit = (current_price - entry_price) * position
-            trade_profits.append(profit)
-            trade_log.append((test_dates[i], "SELL", current_price, capital, 0))
-            position = 0
-
-        # 計算「明天」收盤時的資產總值 (持股價值跟著明天價格浮動)
+        # 每日更新資產價值
         current_equity = capital + position * next_price
         equity_curve.append(current_equity)
 
-    # 最後強制平倉 (以最後一天的收盤價賣出)
+    # 最後強制平倉
     if position > 0:
-        final_price = prices[len(final_signals)]
+        final_price = backtest_prices[-1]
         capital += position * final_price
         profit = (final_price - entry_price) * position
         trade_profits.append(profit)
-        trade_log.append((test_dates[len(final_signals)], "FINAL SELL", final_price, capital, 0))
+        trade_log.append((test_dates[-1], "FINAL SELL", final_price, capital, 0))
         position = 0
 
     final_capital = capital
     total_return_pct = (final_capital / initial_capital - 1) * 100
+
     
     # === 修正：補上缺失的 strategy_returns ===
     equity_series = pd.Series(equity_curve)
     strategy_returns = equity_series.pct_change().fillna(0).values 
     
     # 計算夏普比率與最大回撤
-    sharpe = (np.mean(strategy_returns) / (np.std(strategy_returns) + 1e-9)) * np.sqrt(252)
+    # 修正: np.mean/np.std 回傳型態，確保 sharpe_val 為純 float
+    # 再次修正: np.mean/np.std 回傳型態，item() 取純 float
+    mean_ret = np.mean(strategy_returns)
+    std_ret = np.std(strategy_returns) + 1e-9
+    if hasattr(mean_ret, 'item'):
+        mean_ret = mean_ret.item()
+    if hasattr(std_ret, 'item'):
+        std_ret = std_ret.item()
+    sharpe_val = mean_ret / std_ret * np.sqrt(252)
+
+# 如果計算結果是 NaN (例如沒交易)，給它一個 0.0
+    if np.isnan(sharpe_val):
+        sharpe_val = 0.0
     rolling_max = equity_series.cummax()
     drawdown = (equity_series - rolling_max) / rolling_max
-    max_drawdown = drawdown.min() * 100
-    
+    max_drawdown = drawdown.min() * 100    
     if len(trade_profits) > 0:
         win_rate = np.mean(np.array(trade_profits) > 0) * 100
     else:
         win_rate = 0
-
     # --- 8. 在 Streamlit 上顯示儀表板 ---
     st.divider()
     st.header("📈 模型專業評估儀表板")
@@ -287,20 +355,40 @@ if st.session_state.is_trained:
 
     with col3:
         # 顯示夏普比率
-        st.metric("夏普比率 (Sharpe Ratio)", f"{sharpe:.2f}")
+        st.metric("夏普比率 (Sharpe Ratio)", f"{sharpe_val:.2f}")
         st.caption("風險調整後的報酬，通常 >1.0 代表策略表現良好。")
 
     # --- 額外增加：回測曲線圖 ---
     # 這能讓儀表板更完整，看到「跟著 AI 買」的累積損益
     st.subheader("💰 AI 策略模擬累積收益率")
-    cumulative_strategy = (1 + pd.Series(strategy_returns)).cumprod()
-    cumulative_actual = (1 + pd.Series(final_actual_returns)).cumprod()
+    
+    # 修正：直接使用 y_test_actual 作為大盤對照組
+
+    # Clean cumulative returns to ensure all values are finite
+    # Ensure inputs are 1D float arrays
+
+    # Ensure all elements are float scalars (not arrays)
+    def flatten_to_float(arr):
+        return np.array([float(x) if np.ndim(x) == 0 else float(np.asarray(x).flatten()[0]) for x in arr])
+
+    strategy_returns_clean = flatten_to_float(strategy_returns)
+    y_test_actual_clean = flatten_to_float(y_test_actual)
+
+    cumulative_strategy = (1 + pd.Series(strategy_returns_clean)).cumprod()
+    cumulative_strategy = pd.Series(cumulative_strategy).replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
+    cumulative_strategy = np.asarray(cumulative_strategy).astype(float).flatten()
+
+    cumulative_actual = (1 + pd.Series(y_test_actual_clean)).cumprod()
+    cumulative_actual = pd.Series(cumulative_actual).replace([np.inf, -np.inf], np.nan).ffill().fillna(1.0)
+    cumulative_actual = np.asarray(cumulative_actual).astype(float).flatten()
 
     fig_perf, ax_perf = plt.subplots(figsize=(10, 4))
-    ax_perf.plot(cumulative_actual.values, label="market return (Buy & Hold)", color="gray", alpha=0.5)
-    ax_perf.plot(cumulative_strategy.values, label="AI strategy return", color="gold", linewidth=2)
+    # 讓兩條線都從 1.0 開始（代表 100% 原始本金）
+    ax_perf.plot(cumulative_actual, label="Market Return (Buy & Hold)", color="gray", alpha=0.5)
+    ax_perf.plot(cumulative_strategy, label="AI Strategy Return", color="gold", linewidth=2)
+    ax_perf.axhline(y=1.0, color='black', linestyle='--', alpha=0.3) # 增加一條 1.0 的基準線
     ax_perf.legend()
-    ax_perf.set_ylabel("cumulative return (times)")
+    ax_perf.set_ylabel("Cumulative Return (Multiple)")
     st.pyplot(fig_perf)
 
     # 顯示指標解釋
@@ -316,24 +404,62 @@ if st.session_state.is_trained:
         st.dataframe(trade_df)
     else:
         st.write("沒有產生交易訊號")
-    st.subheader("💰 策略最終結果")
+    # --- 修正：策略最終結果型態轉換 ---
+    # 使用 np.array(x).item() 就像是把多層包裝的禮物拆開，直到剩下核心的純數字
+    final_capital_val = float(np.array(final_capital).item())
+    total_return_pct_val = float(np.array(total_return_pct).item())
+    max_drawdown_val = float(np.array(max_drawdown).item())
+    win_rate_val = float(np.array(win_rate).item())
 
+    st.subheader("💰 策略最終結果")
     colA, colB = st.columns(2)
 
     with colA:
+        # 顯示初始本金
         st.metric("初始本金", f"${initial_capital:,.0f}")
 
     with colB:
-        st.metric("最終資金", f"${final_capital:,.0f}", 
-                delta=f"{total_return_pct:.2f}%")
+        # 顯示最終資金與總報酬變動
+        st.metric(
+            "最終資金", 
+            f"${final_capital_val:,.0f}", 
+            delta=f"{total_return_pct_val:.2f}%"
+        )
     
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("最終報酬率", f"{total_return_pct:.2f}%")
+        st.metric("最終報酬率", f"{total_return_pct_val:.2f}%")
 
     with col2:
-        st.metric("最大回撤 (MDD)", f"{max_drawdown:.2f}%")
+        st.metric("最大回撤 (MDD)", f"{max_drawdown_val:.2f}%")
 
     with col3:
-        st.metric("勝率 (Win Rate)", f"{win_rate:.2f}%")
+        st.metric("勝率 (Win Rate)", f"{win_rate_val:.2f}%")  
+    # --- 預測明天 (修正型態問題) ---
+    feature_count = scaled_data.shape[1] 
+    last_window_data = scaled_data[-look_back:]
+    last_window_tensor = torch.from_numpy(last_window_data).float().view(1, look_back, feature_count).to(device)  
+    model.eval()
+    with torch.no_grad():
+        next_pred_raw = model(last_window_tensor).cpu().numpy()
+
+    # 1. 轉回實際數值並用 .item() 轉成純 Python 數字
+    # get_inverse_price 回傳的是陣列，[0] 取出第一個，.item() 確保它是純數字
+    next_return_val = float(get_inverse_price(next_pred_raw)[0])
+    # 2. 抓取最後一天的真實收盤價，同樣確保它是純數字
+    # raw_close_prices[-1] 有時會是個陣列，強制轉成純 float
+    last_actual_close = float(np.asarray(raw_close_prices[-1]).flatten()[0])
+    # 3. 換算預測收盤價
+    next_price_val = last_actual_close * (1 + next_return_val)
+
+    # 4. 顯示結果
+    st.divider()
+    st.subheader("🔮 明日走勢預測")
+    col_p1, col_p2 = st.columns(2)
+    with col_p1:
+        # 這裡就不會報錯了，因為 next_return_val 是數字
+        st.metric("預測漲跌幅", f"{next_return_val * 100:.2f}%")
+    with col_p2:
+        # 這裡也不會報錯了，因為 next_price_val 是數字
+        st.metric("預測目標收盤價", f"${next_price_val:.2f}")
